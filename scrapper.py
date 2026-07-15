@@ -1,27 +1,25 @@
 """
-url_scraper.py
----------------
-Fetches an article URL and extracts its main body text, returning a
-SourceDocument (same structure used elsewhere in data_processor.py)
-so it can be handed straight to llm_processor.py.
-
-Install:
-    pip install requests beautifulsoup4
-
-Usage:
-    python url_scraper.py https://mindfulambition.net/beginners-mind/
+scrapper.py
+-----------
+Data Input layer. Defines SourceDocument (the common shape every sourcegets normalized into) 
+and the loaders that populate it: web articles, YouTube transcripts, and local text files.
 """
 
 import re
-import sys
-from pathlib import Path
-
 import requests
-from bs4 import BeautifulSoup
+from pathlib import Path
 from dataclasses import dataclass
+from bs4 import BeautifulSoup
 
-DATA_DIR = Path("input data")
-DATA_DIR.mkdir(exist_ok=True)
+from config import DATA_DIR
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    )
+}
+NOISE_TAGS = ["script", "style", "nav", "header", "footer", "aside", "form", "noscript"]
 
 
 @dataclass
@@ -31,27 +29,15 @@ class SourceDocument:
     raw_text: str
 
 
-HEADERS = {
-    # Some sites block requests with no User-Agent; a normal browser UA avoids that.
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-    )
-}
-
-# Tags that are almost never part of the actual article content.
-NOISE_TAGS = ["script", "style", "nav", "header", "footer", "aside", "form", "noscript"]
-
-
 def _slugify(url: str) -> str:
     """Turns a URL into a safe filename, e.g. mindfulambition-net-beginners-mind.txt"""
     slug = re.sub(r"^https?://", "", url)
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", slug).strip("-").lower()
-    return slug[:100]  # keep filenames reasonable
+    return slug[:100]
 
 
 def save_to_file(doc: SourceDocument, folder: Path = DATA_DIR) -> Path:
-    """Saves a SourceDocument's raw_text to data/<slug>.txt and returns the path."""
+    """Saves a SourceDocument's raw_text to 'input_data/<slug>.txt' and returns the path."""
     filename = f"{_slugify(doc.origin)}.txt"
     out_path = folder / filename
     out_path.write_text(doc.raw_text, encoding="utf-8")
@@ -59,20 +45,11 @@ def save_to_file(doc: SourceDocument, folder: Path = DATA_DIR) -> Path:
 
 
 def load_from_url(url: str, timeout: int = 15) -> SourceDocument:
-    """
-    Downloads the page at `url` and extracts readable article text.
-
-    Strategy:
-      1. Try common article containers (<article>, common CMS classes)
-         first, since that gives the cleanest extraction.
-      2. Fall back to all <p> tags on the page if no container is found.
-      3. Strip nav/header/footer/script/style noise either way.
-    """
+    """Downloads the page at `url` and extracts readable article text."""
     response = requests.get(url, headers=HEADERS, timeout=timeout)
     response.raise_for_status()
 
     soup = BeautifulSoup(response.text, "html.parser")
-
     for tag in soup(NOISE_TAGS):
         tag.decompose()
 
@@ -82,15 +59,8 @@ def load_from_url(url: str, timeout: int = 15) -> SourceDocument:
         or soup.find("div", class_=lambda c: c and "post-content" in c)
         or soup.find("main")
     )
-
-    if container:
-        paragraphs = container.find_all("p")
-    else:
-        paragraphs = soup.find_all("p")
-
-    text = "\n\n".join(
-        p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)
-    )
+    paragraphs = container.find_all("p") if container else soup.find_all("p")
+    text = "\n\n".join(p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True))
 
     if not text:
         raise ValueError(f"No article text found at {url} — page structure may need a custom selector.")
@@ -98,22 +68,52 @@ def load_from_url(url: str, timeout: int = 15) -> SourceDocument:
     return SourceDocument(source_type="url", origin=url, raw_text=text)
 
 
-if __name__ == "__main__":
-    target_url = sys.argv[1] if len(sys.argv) > 1 else "https://mindfulambition.net/beginners-mind/"
-    doc = load_from_url(target_url)
-    saved_path = save_to_file(doc)
+def load_from_youtube(url: str, languages=("en",)) -> SourceDocument:
+    """Fetches a YouTube video's transcript. Requires: pip install youtube-transcript-api"""
+    from youtube_transcript_api import YouTubeTranscriptApi
 
-    print(f"Source: {doc.origin}")
-    print(f"Extracted {len(doc.raw_text)} characters, {len(doc.raw_text.split())} words")
-    print(f"Saved to: {saved_path}")
-    print("---")
-    print(doc.raw_text[:300], "...")  # preview only
+    match = re.search(r"(?:v=|/)([0-9A-Za-z_-]{11}).*", url) or re.search(r"youtu\.be/([0-9A-Za-z_-]{11})", url)
+    if not match:
+        raise ValueError(f"Could not extract a YouTube video ID from: {url}")
+    video_id = match.group(1)
 
-    doc = load_from_url("https://mindfulambition.net/beginners-mind/")
-    saved_path = save_to_file(doc)
+    try:
+        transcript = YouTubeTranscriptApi().fetch(video_id, languages=list(languages))
+        chunks = transcript.to_raw_data()
+    except AttributeError:
+        chunks = YouTubeTranscriptApi.get_transcript(video_id, languages=list(languages))
 
-    print(f"Source: {doc.origin}")
-    print(f"Extracted {len(doc.raw_text)} characters, {len(doc.raw_text.split())} words")
-    print(f"Saved to: {saved_path}")
-    print("---")
-    print(doc.raw_text[:300], "...")
+    text = " ".join(c["text"] for c in chunks)
+    if not text.strip():
+        raise ValueError(f"No transcript available for {url}")
+
+    return SourceDocument(source_type="youtube", origin=url, raw_text=text)
+
+
+def load_from_text_file(path: str) -> SourceDocument:
+    text = Path(path).read_text(encoding="utf-8")
+    return SourceDocument(source_type="text", origin=str(path), raw_text=text)
+
+
+def load_all_from_folder(folder: str = "input_data", pattern: str = "*.txt") -> list:
+    """Reads every .txt file in `folder` and returns one SourceDocument per file."""
+    folder_path = Path(folder)
+    files = sorted(folder_path.glob(pattern))
+    if not files:
+        raise FileNotFoundError(f"No .txt files found in {folder_path.resolve()}")
+    return [load_from_text_file(str(f)) for f in files]
+
+
+def load_source(source: str) -> SourceDocument:
+    """
+    Dispatcher: detects whether `source` is a YouTube link or a regular URL,
+    and routes it to the correct loader. The UI calls this, not load_from_url()
+    directly, so YouTube links work.
+    """
+    lowered = source.lower().strip()
+    if "youtube.com" in lowered or "youtu.be" in lowered:
+        return load_from_youtube(source)
+    elif lowered.startswith("http://") or lowered.startswith("https://"):
+        return load_from_url(source)
+    else:
+        raise ValueError(f"Unrecognized source: {source!r} (expected a web URL or YouTube link)")
