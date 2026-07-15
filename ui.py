@@ -37,7 +37,7 @@ custom_css = """
 """
 
 
-def generate_podcast(sources_text, voice, progress=gr.Progress()):
+def generate_podcast(sources_text, progress=gr.Progress()):
     log_lines = []
     sources = [s.strip() for s in sources_text.splitlines() if s.strip()]
     if not sources:
@@ -91,7 +91,7 @@ def generate_podcast(sources_text, voice, progress=gr.Progress()):
         raise gr.Error(f"Audio generation failed: {e}")
 
     progress(1.0, desc="Done!")
-    return episode_title, script, audio_path, "\n".join(log_lines)
+    return episode_title, topic, script, audio_path, "\n".join(log_lines)
 
 
 def build_demo() -> gr.Blocks:
@@ -106,25 +106,36 @@ def build_demo() -> gr.Blocks:
             """
         )
 
-        with gr.Row():
-            with gr.Column(scale=1):
+        with gr.Column(scale=1):
+                gr.Markdown("### Your input")
                 sources_input = gr.Textbox(
-                    label=" Sources (one per line — article or YouTube URLs)",
+                    label=" Add your sources (articles or YouTube video) one per line",
                     lines=8,
                     placeholder="https://example.com/article\nhttps://youtube.com/watch?v=...",
                 )
                 generate_btn = gr.Button(" GENERATE PODCAST", variant="primary", elem_classes="generate-btn")
+                status_output = gr.Markdown("")
 
-            with gr.Column(scale=1):
+        with gr.Column(scale=1):
+                gr.Markdown("### Your generated podcast episode")
                 title_output = gr.Textbox(label=" Suggested Episode Title", interactive=False)
                 topic_output = gr.Textbox(label=" Episode Topics", interactive=False)
-                audio_output = gr.Audio(label=" Episode Audio", type="filepath")
+                audio_output = gr.Audio(label="Episode Audio", type="filepath")
                 script_output = gr.Textbox(label="Episode Script", lines=12)
                 log_output = gr.Textbox(label="Processing Log", lines=6)
+
         generate_btn.click(
+            fn=lambda: " **Generating your episode** — this usually takes a minute",
+            outputs=status_output
+        ).then(
             fn=generate_podcast,
             inputs=[sources_input],
             outputs=[title_output, topic_output, script_output, audio_output, log_output],
-    )
-
+            show_progress="hidden",
+        ).then(
+            fn=lambda: " **Episode ready!**",
+            outputs=status_output,
+            show_progress="hidden",
+        )
+        
     return demo
