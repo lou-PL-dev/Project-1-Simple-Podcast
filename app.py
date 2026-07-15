@@ -99,6 +99,36 @@ def load_from_url(url: str, timeout: int = 15) -> SourceDocument:
 
     return SourceDocument(source_type="url", origin=url, raw_text=text)
 
+def load_source(source: str) -> SourceDocument:
+    """
+    Dispatcher: detects whether `source` is a YouTube link or a regular URL,
+    and routes it to the correct loader. This is what the UI should call
+    instead of load_from_url() directly, so YouTube links actually work.
+    """
+    lowered = source.lower().strip()
+    if "youtube.com" in lowered or "youtu.be" in lowered:
+        return load_from_youtube(source)
+    elif lowered.startswith("http://") or lowered.startswith("https://"):
+        return load_from_url(source)
+    else:
+        raise ValueError(f"Unrecognized source: {source!r} (expected a web URL or YouTube link)")
+
+def load_from_youtube(url: str, languages=("en",)) -> SourceDocument:
+    from youtube_transcript_api import YouTubeTranscriptApi
+    match = re.search(r"(?:v=|/)([0-9A-Za-z_-]{11}).*", url) or re.search(r"youtu\.be/([0-9A-Za-z_-]{11})", url)
+    if not match:
+        raise ValueError(f"Could not extract a YouTube video ID from: {url}")
+    video_id = match.group(1)
+    try:
+        transcript = YouTubeTranscriptApi().fetch(video_id, languages=list(languages))
+        chunks = transcript.to_raw_data()
+    except AttributeError:
+        chunks = YouTubeTranscriptApi.get_transcript(video_id, languages=list(languages))
+    text = " ".join(c["text"] for c in chunks)
+    if not text.strip():
+        raise ValueError(f"No transcript available for {url}")
+    return SourceDocument(source_type="youtube", origin=url, raw_text=text)
+
 def load_from_text_file(path: str) -> SourceDocument:
     text = Path(path).read_text(encoding="utf-8")
     return SourceDocument(source_type="text", origin=str(path), raw_text=text)
@@ -111,6 +141,9 @@ def load_all_from_folder(folder: str = "input_data", pattern: str = "*.txt") -> 
         raise FileNotFoundError(f"No .txt files found in {folder_path.resolve()}")
     return [load_from_text_file(str(f)) for f in files]
 
+doc = load_source("https://www.youtube.com/watch?v=eMlx5fFNoYc")
+print(doc.source_type, len(doc.raw_text.split()), "words")
+print(doc.raw_text[:300])
 
 ## Process sources ( Content Transformation)
 # Implements the map-reduce transformation stage: each source is condensed into a short 
@@ -337,7 +370,7 @@ def generate_podcast(sources_text, voice, progress=gr.Progress()):
     docs = []
     for src in sources:
         try:
-            doc = load_from_url(src)
+            doc = load_source(src)
             save_to_file(doc)
             docs.append(doc)
             log_lines.append(f"✓ Loaded: {src} [{len(doc.raw_text.split())} words]")
