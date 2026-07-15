@@ -1,1 +1,3 @@
 .env
+input data/tedx_audio.mp3
+.gitignore
