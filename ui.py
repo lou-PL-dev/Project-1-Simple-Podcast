@@ -130,8 +130,7 @@ def build_demo() -> gr.Blocks:
         ).then(
             fn=generate_podcast,
             inputs=[sources_input],
-            outputs=[title_output, topic_output, script_output, audio_output, log_output],
-            show_progress="hidden",
+            outputs=[title_output, topic_output, script_output, audio_output, log_output]
         ).then(
             fn=lambda: " **Episode ready!**",
             outputs=status_output,
