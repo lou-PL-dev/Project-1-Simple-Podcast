@@ -1,3 +1,6 @@
 .env
 input data/tedx_audio.mp3
 .gitignore
+audio_output.mp3
+output/The Joy of Learning Embracing the Curve.mp3
+audio_output.mp3
